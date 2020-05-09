@@ -15,7 +15,7 @@ logging.basicConfig(format = FORMAT, datefmt = DATEFMT, level = logging.INFO)
 bot = commands.Bot('dnd-')
 token = '' #Manually add token here.
 maintenance = False
-status_message = 'DnD'
+status_message = 'DnD (dnd-help)'
 
 if token == '': #Get token if it's not already in the code.
     try:
@@ -74,6 +74,7 @@ class Player:
         self.pp = 0
         self.id = id
         self.name = name
+
 
     @property
     def balance(self):
@@ -233,7 +234,13 @@ def convert_from_egp(amount, amounts = None):
 ################################################################################
 #Commands start
 
-@bot.command()
+brief_desc = 'Initialize a new campaign in the current channel'
+full_desc = ('Usage: dnd-initialize\n\n'
+             'Initialize a new campaign in the current channel and prepare it '
+             'for processing transactions. The user invoking this command '
+             'becomes the GM of this campaign and has administrative powers.')
+
+@bot.command(brief = brief_desc, description = full_desc)
 async def initialize(ctx):
     logging.info('Initializing new campaign in #{0}.'.format(ctx.channel.name))
 
@@ -251,7 +258,15 @@ async def initialize(ctx):
 
 ################################################################################
 
-@bot.command()
+brief_desc = 'Register a user in the campaign under the given name'
+full_desc = ('Usage: dnd-register ([user ID]) as [name]\n\n'
+             'Register the user in the campaign as [name] and initialize their '
+             'account with zero balance.\n\nOnly the GM may use the optional '
+             '([user ID]) argument. When this argument is not supplied, the '
+             'user calling this command is registered under the given name.'
+             '[name] is case sensitive, and may not contain spaces.')
+
+@bot.command(brief = brief_desc, description = full_desc)
 async def register(ctx):
     logging.info('Registering new player in #{0}.'.format(ctx.channel.name))
 
@@ -299,7 +314,42 @@ async def register(ctx):
 
 ################################################################################
 
-@bot.command()
+brief_desc = 'Make a transaction request and add it to the queue'
+full_desc = ('Usage: dnd-transact (as [initiator name]) give/take [amounts] '
+             '(at [+/-][offset]%) (to/from [participant name]) (for [reason])'
+             '\n\nAdd a transaction request to the queue for adding or '
+             'subtracting the given [amounts] to the involved parties\' '
+             'accounts.\n\nOnly the GM may use the optional (as [initiator '
+             'name]) argument. When this argument is not supplied, the user '
+             'calling this command is made the initiator of the transaction. '
+             '\n\nThe required argument give/take [amounts] decides whether '
+             'the money is credited to or debited from the initiator\'s '
+             'account. [amounts] is a collection of comma separated values '
+             'consisting of a number followed by the unit, which may be one of '
+             'CP, SP, GP, PP, or EGP. Capitalisation is not required. For '
+             'example, "give 400 sp", "take 2 CP, 5 SP", and "give 24.5 EGP" '
+             'are all syntactically valid. Note that only EGP values can be '
+             'non-integers, and only up to two decimal points.\n\nThe optional '
+             'argument (at [+/-][offset]%) allows for adding a percentage '
+             'offset to the transaction for the purposes of discounts and '
+             'price hikes. [+/-][offset] is a signed integer that determines '
+             'the type and magnitude of the offset. For example, "+5%" and '
+             '"-20%" are both syntactically valid.\n\nThe optional argument '
+             '(to/from [participant name]) designates the other participant in '
+             'the transaction, if one exists. When this argument is not '
+             'supplied, the other participant is assumed to be an NPC or other '
+             'similar entity, and hence the money is practically created or '
+             'destroyed. Note that the to/from term must be consistent with '
+             'the preceding give/take term in order to be syntactically valid. '
+             '\n\nThe optional argument (for [reason]) allows for adding a '
+             'note to the transaction for record keeping and ease of '
+             'identification. [reason] can be an arbitrarily long string, '
+             'though it is recommended that it be kept brief for clarity. '
+             '\n\nA complete use of the command leveraging all the arguments '
+             'may look as follows:\ndnd-transact as player1 give 45 gp at -20% '
+             'to player2 for buying used scale mail')
+
+@bot.command(brief = brief_desc, description = full_desc)
 async def transact(ctx):
     logging.info('Attempting transaction in #{0}.'.format(ctx.channel.name))
 
@@ -440,7 +490,14 @@ async def transact(ctx):
 
 ################################################################################
 
-@bot.command()
+brief_desc = 'View transactions that are waiting for approval'
+full_desc = ('Usage: dnd-pending\n\n'
+             'Show all transactions that can be approved by the user calling '
+             'this command. Note that only the participant in the transaction '
+             '(not the initiator) can approve pending transactions, with only '
+             'the GM being able to view (and approve) all transactions.')
+
+@bot.command(brief = brief_desc, description = full_desc)
 async def pending(ctx):
     logging.info('Displaying pending in #{0}.'.format(ctx.channel.name))
 
@@ -468,7 +525,18 @@ async def pending(ctx):
 
 ################################################################################
 
-@bot.command()
+brief_desc = 'Approve a transaction currently in the queue'
+full_desc = ('Usage: dnd-approve [IDs and slices]\n\n'
+             'Approve pending transactions with the given IDs and those '
+             'contained within the ID slices. The IDs can be obtained by using '
+             'the dnd-pending command. The [IDs and slices] argument is a set '
+             'of comma separated values containing either IDs or ID slices. An '
+             'ID slice consists of a lower ID bound followed by a hyphen and a '
+             'upper ID bound, and selects the bounding IDs as well as all IDs '
+             'between them. For example, "1, 2, 4", "2-5, 7", and "1-3, 6-7" '
+             'are all syntactically valid.')
+
+@bot.command(brief = brief_desc, description = full_desc)
 async def approve(ctx):
     logging.info('Approving transactions in #{0}.'.format(ctx.channel.name))
 
@@ -497,7 +565,18 @@ async def approve(ctx):
 
 ################################################################################
 
-@bot.command()
+brief_desc = 'Deny a transaction currently in the queue'
+full_desc = ('Usage: dnd-deny [IDs and slices]\n\n'
+             'Deny pending transactions with the given IDs and those contained '
+             'within the ID slices. The IDs can be obtained by using the '
+             'dnd-pending command. The [IDs and slices] argument is a set '
+             'of comma separated values containing either IDs or ID slices. An '
+             'ID slice consists of a lower ID bound followed by a hyphen and a '
+             'upper ID bound, and selects the bounding IDs as well as all IDs '
+             'between them. For example, "1, 2, 4", "2-5, 7", and "1-3, 6-7" '
+             'are all syntactically valid.')
+
+@bot.command(brief = brief_desc, description = full_desc)
 async def deny(ctx):
     logging.info('Denying transactions in #{0}.'.format(ctx.channel.name))
 
@@ -523,7 +602,13 @@ async def deny(ctx):
 
 ################################################################################
 
-@bot.command()
+brief_desc = 'View the account balance of a user'
+full_desc = ('Usage: dnd-balance (of [name])\n\n'
+             'Show the balance in the account of a player. Only the GM may use '
+             'the optional (of [name]) argument. When this argument is not '
+             'supplied, the balance of the user calling the command is shown.')
+
+@bot.command(brief = brief_desc, description = full_desc)
 async def balance(ctx):
     logging.info('Displaying balance in #{0}.'.format(ctx.channel.name))
 

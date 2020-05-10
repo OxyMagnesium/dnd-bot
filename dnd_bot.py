@@ -1,6 +1,7 @@
 import logging
 import os
 import pickle
+import random
 
 import discord
 from discord.ext import commands
@@ -651,6 +652,62 @@ async def balance(ctx):
 
     logging.info('Successfully displayed balance of {0}.'.format(target))
     await ctx.send('Account balance for {0}:\n'.format(target) + msg)
+
+################################################################################
+
+brief_desc = 'Roll dice of the given type and quantity'
+full_desc = ('Usage: dnd-roll ([number])d[sides](+[offset])\n\n'
+             'Roll [number] [sides]-sided dice with a [offset] roll modifier. '
+             'Only the [sides] argument is required, but all values must be '
+             'positive integers to be defined.')
+
+@bot.command(brief = brief_desc, description = full_desc)
+async def roll(ctx):
+    logging.info('Rolling dice in #{0}.'.format(ctx.channel.name))
+
+    try:
+        intake = ctx.message.content.split(' ')[1]
+    except IndexError:
+        await log_syntax_error(ctx)
+        return
+
+    number = intake.split('d')[0]
+    if number:
+        try:
+            number = int(number)
+        except ValueError:
+            logging.info('Invalid roll number; aborting.')
+            await ctx.send('"{0}" is an invalid number.'.format(number))
+            return
+    else:
+        number = 1
+
+    type = intake.split('d')[1].split('+')[0]
+    try:
+        type = int(type)
+    except ValueError:
+        logging.info('Invalid roll type; aborting.')
+        await ctx.send('"{0}" is an invalid die type.'.format(number))
+        return
+
+    try:
+        offset = int(intake.split('d')[1].split('+')[1])
+    except IndexError:
+        offset = 0
+    except ValueError:
+        logging.info('Invalid roll offset; aborting.')
+        await ctx.send('"{0}" is an invalid offset.'.format(number))
+        return
+
+    rolls = [1 + random.randrange(type) for _ in range(number)]
+    result = sum(rolls) + offset
+
+    breakdown = '||('
+    for roll in rolls:
+        breakdown += str(roll) + ' + '
+    breakdown = breakdown[ :-3] + ') + {0}||'.format(offset)
+
+    await ctx.send('Rolled {0}: **{1}**\n{2}'.format(intake, result, breakdown))
 
 #Commands end
 ################################################################################

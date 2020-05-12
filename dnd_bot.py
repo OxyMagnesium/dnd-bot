@@ -644,7 +644,7 @@ async def balance(ctx):
         msg = campaign.players[target].balance
     else:
         logging.info('Invalid participant name; aborting.')
-        await ctx.send('No player with name "{0}"'.format(initiator)
+        await ctx.send('No player with name "{0}"'.format(target)
                        + ' exists in this campaign.')
         return
 

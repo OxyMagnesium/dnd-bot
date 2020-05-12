@@ -50,7 +50,7 @@ class Campaign:
         self.pending = []
         self.archive = []
         self.id = id
-        self.gm = gm
+        self.gms = [gm]
 
 
     def approve(self, indices):
@@ -141,7 +141,7 @@ class Transaction:
 
 async def parse_indices(ctx, campaign, terms):
     pending = [transaction for transaction in campaign.pending
-               if ctx.author.id in (transaction.participant.id, campaign.gm)]
+               if ctx.author.id in (transaction.participant.id, *campaign.gms)]
     terms = [term.strip() for term in terms.split(',')]
     indices = []
     if 'last' in terms:
@@ -194,7 +194,7 @@ async def parse_indices(ctx, campaign, terms):
     player_index = 0
     corrected_indices = []
     for global_index, transaction in enumerate(campaign.pending):
-        if ctx.author.id in (transaction.participant.id, campaign.gm):
+        if ctx.author.id in (transaction.participant.id, *campaign.gms):
             if player_index in indices:
                 corrected_indices.append(global_index)
             player_index += 1
@@ -217,9 +217,11 @@ def load_campaign(id):
         campaign = pickle.load(file)
     return campaign
 
+
 def convert_to_egp(amounts):
     return (0.01*amounts['cp'] + 0.1*amounts['sp']
             + 1*amounts['gp'] + 10*amounts['pp'])
+
 
 def convert_from_egp(amount, amounts = None):
     if amounts is None:
@@ -284,10 +286,6 @@ async def register(ctx):
         elif arguments[2] == 'as':
             id = int(arguments[1])
             name = arguments[3]
-            #if not bot.get_user(id):
-            #    logging.info('Invalid player ID; aborting.')
-            #    await ctx.send('Invalid player ID.')
-            #    return
         else:
             raise IndexError('Invalid syntax')
     except IndexError:
@@ -384,7 +382,7 @@ async def transact(ctx):
     campaign = load_campaign(ctx.channel.id)
 
     if 'as' in parsed_args:
-        if ctx.author.id == campaign.gm:
+        if ctx.author.id in campaign.gms:
             name = parsed_args['as']
             if name in campaign.players:
                 initiator = campaign.players[name]
@@ -512,7 +510,7 @@ async def pending(ctx):
     msg = ''
     id = 1
     for transaction in campaign.pending:
-        if ctx.author.id in (transaction.participant.id, campaign.gm):
+        if ctx.author.id in (transaction.participant.id, *campaign.gms):
             msg += str(id) + ': `' + transaction.text + '`\n'
             id += 1
     msg = msg[ :-1]
@@ -624,7 +622,7 @@ async def balance(ctx):
     if len(arguments) > 1:
         try:
             if arguments[1] == 'of':
-                if ctx.author.id == campaign.gm:
+                if ctx.author.id in campaign.gms:
                     target = arguments[2]
                 else:
                     logging.info('Unauthorized use of "of"; aborting.')

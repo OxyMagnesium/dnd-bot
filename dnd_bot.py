@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import pickle
@@ -10,36 +11,8 @@ FORMAT = '%(levelname)s:%(name)s:(%(asctime)s): %(message)s'
 DATEFMT = '%d-%b-%y %H:%M:%S'
 logging.basicConfig(format = FORMAT, datefmt = DATEFMT, level = logging.INFO)
 
-################################################################################
-#Initialization start
-
 bot = commands.Bot('dnd-')
-token = '' #Manually add token here.
-maintenance = False
-status_message = 'DnD (dnd-help)'
 
-if token == '': #Get token if it's not already in the code.
-    try:
-        file = open('token.txt')
-        token = file.read()
-        file.close()
-        logging.info("Token acquired from file.")
-    except FileNotFoundError:
-        logging.warning("Token file not found.")
-        try:
-            token = os.environ['DND_TOKEN']
-            logging.info("Token acquired from environment variable.")
-        except KeyError:
-            logging.warning("Token environment variable not found.")
-            logging.error("Token auto detection failed. Stopping execution.")
-            input("Press enter to quit.")
-            quit()
-else:
-    logging.info("Token acquired from code.")
-
-channels = [int(id) for id in os.listdir('data')]
-
-#Initialization end
 ################################################################################
 #Internal classes and functions start
 
@@ -139,6 +112,53 @@ class Transaction:
 
 
 
+class DatabaseManager:
+    def __init__(self):
+        self.campaigns = [int(id) for id in os.listdir('data')]
+        self.locks = {int(id): asyncio.Lock() for id in os.listdir('data')}
+        self.cache = {}
+
+
+    async def add_campaign(self, campaign):
+        if campaign.id in self.campaigns:
+            raise FileExistsError('Campaign with this ID already exists')
+
+        self.campaigns.append(campaign.id)
+        self.locks[campaign.id] = asyncio.Lock()
+
+        await self.locks[campaign.id].acquire()
+        await self.save_campaign(campaign)
+
+
+    async def load_campaign(self, id, blocking = False):
+        await self.locks[id].acquire()
+
+        if id not in self.cache:
+            try:
+                with open('data/{0}'.format(id), 'rb') as file:
+                    campaign = pickle.load(file)
+            except FileNotFoundError:
+                return None
+            self.cache[campaign.id] = campaign
+            while len(self.cache) > 10:
+                self.cache.pop(self.cache.keys()[0])
+
+        if not blocking:
+            self.locks[id].release()
+
+        return self.cache[id]
+
+
+    async def save_campaign(self, campaign):
+        with open('data/{0}'.format(campaign.id), 'wb') as file:
+            pickle.dump(campaign, file)
+        self.cache[campaign.id] = campaign
+        while len(self.cache) > 10:
+            self.cache.pop(self.cache.keys()[0])
+        self.locks[campaign.id].release()
+
+
+
 async def parse_indices(ctx, campaign, terms):
     pending = [transaction for transaction in campaign.pending
                if ctx.author.id in (transaction.participant.id, *campaign.gms)]
@@ -207,17 +227,6 @@ async def log_syntax_error(ctx):
     await ctx.send('Invalid syntax. Ask for help.')
 
 
-def save_campaign(campaign, id):
-    with open('data/{0}'.format(id), 'wb') as file:
-        pickle.dump(campaign, file)
-
-
-def load_campaign(id):
-    with open('data/{0}'.format(id), 'rb') as file:
-        campaign = pickle.load(file)
-    return campaign
-
-
 def convert_to_egp(amounts):
     return (0.01*amounts['cp'] + 0.1*amounts['sp']
             + 1*amounts['gp'] + 10*amounts['pp'])
@@ -252,9 +261,7 @@ async def initialize(ctx):
         await ctx.send('Campaign already exists in this channel.')
         return
 
-    campaign = Campaign(ctx.channel.id, ctx.author.id)
-    save_campaign(campaign, ctx.channel.id)
-    channels.append(ctx.channel.id)
+    await dbm.add_campaign(Campaign(ctx.channel.id, ctx.author.id))
 
     logging.info('Initialization successful.')
     await ctx.send('New campaign initialized.')
@@ -273,8 +280,8 @@ full_desc = ('Usage: dnd-register ([user ID]) as [name]\n\n'
 async def register(ctx):
     logging.info('Registering new player in #{0}.'.format(ctx.channel.name))
 
-    if ctx.channel.id not in channels:
-        logging.info('Player is already registered; aborting.')
+    if ctx.channel.id not in dbm.campaigns:
+        logging.info('No campaign exists in this channel; aborting.')
         await ctx.send('No campaign exists in this channel.')
         return
 
@@ -292,9 +299,10 @@ async def register(ctx):
         await log_syntax_error(ctx)
         return
 
-    campaign = load_campaign(ctx.channel.id)
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
 
     if id in campaign.player_names:
+        name = campaign.player_names[id]
         logging.info('Name already exists in campaign; aborting.')
         await ctx.send('You are already registered as {0}.'.format(name))
         return
@@ -306,7 +314,7 @@ async def register(ctx):
 
     campaign.players[name] = Player(id, name)
     campaign.player_names[id] = name
-    save_campaign(campaign, ctx.channel.id)
+    await dbm.save_campaign(campaign)
 
     logging.info('Player "{0}" successfully registered.'.format(name))
     await ctx.send('Successfully registered {0}.'.format(name))
@@ -352,7 +360,7 @@ full_desc = ('Usage: dnd-transact (as [initiator name]) give/take [amounts] '
 async def transact(ctx):
     logging.info('Attempting transaction in #{0}.'.format(ctx.channel.name))
 
-    if ctx.channel.id not in channels:
+    if ctx.channel.id not in dbm.campaigns:
         logging.info('Campaign is not initialized; aborting.')
         await ctx.send('No campaign exists in this channel.')
         return
@@ -379,7 +387,7 @@ async def transact(ctx):
         else:
             parsed_args[active_kw] = argument
 
-    campaign = load_campaign(ctx.channel.id)
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
 
     if 'as' in parsed_args:
         if ctx.author.id in campaign.gms:
@@ -482,7 +490,7 @@ async def transact(ctx):
     transaction = Transaction(initiator, mode, amounts, participant, reason)
     campaign.pending.append(transaction)
 
-    save_campaign(campaign, ctx.channel.id)
+    await dbm.save_campaign(campaign)
 
     logging.info('Successfully added transaction to queue.')
     await ctx.send('Transaction recorded; waiting for approval.')
@@ -500,12 +508,12 @@ full_desc = ('Usage: dnd-pending\n\n'
 async def pending(ctx):
     logging.info('Displaying pending in #{0}.'.format(ctx.channel.name))
 
-    if ctx.channel.id not in channels:
+    if ctx.channel.id not in dbm.campaigns:
         logging.info('Campaign is not initialized; aborting.')
         await ctx.send('No campaign exists in this channel.')
         return
 
-    campaign = load_campaign(ctx.channel.id)
+    campaign = await dbm.load_campaign(ctx.channel.id)
 
     msg = ''
     id = 1
@@ -517,7 +525,7 @@ async def pending(ctx):
 
     if not msg:
         logging.info('No pending transactions.')
-        await ctx.send('There are currently no pending transactions.')
+        await ctx.send('You have no pending transactions.')
     else:
         logging.info('Transactions successfully displayed.')
         await ctx.send('Pending transactions:\n' + msg)
@@ -533,21 +541,26 @@ full_desc = ('Usage: dnd-approve [IDs and slices]\n\n'
              'ID slice consists of a lower ID bound followed by a hyphen and a '
              'upper ID bound, and selects the bounding IDs as well as all IDs '
              'between them. For example, "1, 2, 4", "2-5, 7", and "1-3, 6-7" '
-             'are all syntactically valid.')
+             'are all syntactically valid. "all" and "last" are keywords that'
+             'additionally add the respective transactions to the list.')
 
 @bot.command(brief = brief_desc, description = full_desc)
 async def approve(ctx):
     logging.info('Approving transactions in #{0}.'.format(ctx.channel.name))
 
-    if ctx.channel.id not in channels:
+    if ctx.channel.id not in dbm.campaigns:
         logging.info('Campaign is not initialized; aborting.')
         await ctx.send('No campaign exists in this channel.')
         return
 
-    campaign = load_campaign(ctx.channel.id)
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
 
-    terms = ctx.message.content.split(' ', 1)[1].strip()
-    approved_indices = await parse_indices(ctx, campaign, terms)
+    try:
+        terms = ctx.message.content.split(' ', 1)[1].strip()
+        approved_indices = await parse_indices(ctx, campaign, terms)
+    except IndexError:
+        await log_syntax_error(ctx)
+        return
 
     if approved_indices is None:
         return
@@ -557,7 +570,7 @@ async def approve(ctx):
 
     campaign.approve(approved_indices)
 
-    save_campaign(campaign, ctx.channel.id)
+    await dbm.save_campaign(campaign)
 
     logging.info('Successfully approved transactions.')
     await ctx.send('Transaction(s) successfully approved.')
@@ -573,18 +586,19 @@ full_desc = ('Usage: dnd-deny [IDs and slices]\n\n'
              'ID slice consists of a lower ID bound followed by a hyphen and a '
              'upper ID bound, and selects the bounding IDs as well as all IDs '
              'between them. For example, "1, 2, 4", "2-5, 7", and "1-3, 6-7" '
-             'are all syntactically valid.')
+             'are all syntactically valid. "all" and "last" are keywords that'
+             'additionally add the respective transactions to the list.')
 
 @bot.command(brief = brief_desc, description = full_desc)
 async def deny(ctx):
     logging.info('Denying transactions in #{0}.'.format(ctx.channel.name))
 
-    if ctx.channel.id not in channels:
+    if ctx.channel.id not in dbm.campaigns:
         logging.info('Campaign is not initialized; aborting.')
         await ctx.send('No campaign exists in this channel.')
         return
 
-    campaign = load_campaign(ctx.channel.id)
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
 
     terms = ctx.message.content.split(' ', 1)[1].strip()
     denied_indices = await parse_indices(ctx, campaign, terms)
@@ -594,7 +608,7 @@ async def deny(ctx):
 
     campaign.deny(denied_indices)
 
-    save_campaign(campaign, ctx.channel.id)
+    await dbm.save_campaign(campaign)
 
     logging.info('Successfully denied transactions.')
     await ctx.send('Transaction(s) denied.')
@@ -611,12 +625,12 @@ full_desc = ('Usage: dnd-balance (of [name])\n\n'
 async def balance(ctx):
     logging.info('Displaying balance in #{0}.'.format(ctx.channel.name))
 
-    if ctx.channel.id not in channels:
+    if ctx.channel.id not in dbm.campaigns:
         logging.info('Campaign is not initialized; aborting.')
         await ctx.send('No campaign exists in this channel.')
         return
 
-    campaign = load_campaign(ctx.channel.id)
+    campaign = await dbm.load_campaign(ctx.channel.id)
 
     arguments = ctx.message.content.split(' ')
     if len(arguments) > 1:
@@ -709,6 +723,7 @@ async def roll(ctx):
 
 #Commands end
 ################################################################################
+#Events start
 
 @bot.event
 async def on_message(message):
@@ -717,20 +732,21 @@ async def on_message(message):
 
     try:
         global maintenance #Maintenance mode toggle checking.
-        if message.content.split(' ', maxsplit = 1)[1] == 'enable':
-            logging.warning('Maintenance mode is enabled.')
-            maintenance = True
-            msg = 'Maintenance mode'
-            await bot.change_presence(activity = discord.Game(name = msg))
-            await channel.send('Maintenance mode is enabled.')
-            return
-        if message.content.split(' ', maxsplit = 1)[1] == 'disable':
-            logging.warning('Maintenance mode is disabled.')
-            maintenance = False
-            msg = status_message
-            await bot.change_presence(activity = discord.Game(name = msg))
-            await channel.send('Maintenance mode is disabled.')
-            return
+        if message.content.split(' ', maxsplit = 1)[0] == 'dnd-maintenance':
+            if message.content.split(' ', maxsplit = 1)[1] == 'enable':
+                logging.warning('Maintenance mode is enabled.')
+                maintenance = True
+                msg = 'Maintenance mode'
+                await bot.change_presence(activity = discord.Game(name = msg))
+                await message.channel.send('Maintenance mode is enabled.')
+                return
+            if message.content.split(' ', maxsplit = 1)[1] == 'disable':
+                logging.warning('Maintenance mode is disabled.')
+                maintenance = False
+                msg = status_message
+                await bot.change_presence(activity = discord.Game(name = msg))
+                await message.channel.send('Maintenance mode is disabled.')
+                return
     except IndexError:
         pass
 
@@ -739,10 +755,41 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+
 @bot.event
 async def on_ready():
     logging.info('Logged in as {0.name} (ID: {0.id})'.format(bot.user))
     await bot.change_presence(activity = discord.Game(name = status_message))
 
+#Events end
+################################################################################
+#Initialization start
+
 if __name__ == '__main__':
+    token = '' #Manually add token here.
+    status_message = 'DnD (dnd-help)'
+    maintenance = False
+
+    if token == '': #Get token if it's not already in the code.
+        try:
+            file = open('token.txt')
+            token = file.read()
+            file.close()
+            logging.info("Token acquired from file.")
+        except FileNotFoundError:
+            logging.warning("Token file not found.")
+            try:
+                token = os.environ['DND_TOKEN']
+                logging.info("Token acquired from environment variable.")
+            except KeyError:
+                logging.warning("Token environment variable not found.")
+                logging.error("Token auto detection failed. Aborting.")
+                input("Press enter to quit.")
+                quit()
+    else:
+        logging.info("Token acquired from code.")
+
+    dbm = DatabaseManager()
+    logging.info('{0} existing campaigns loaded.'.format(len(dbm.campaigns)))
+
     bot.run(token)

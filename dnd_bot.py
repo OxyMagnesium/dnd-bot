@@ -13,12 +13,14 @@ logging.basicConfig(format = FORMAT, datefmt = DATEFMT, level = logging.INFO)
 
 bot = commands.Bot('dnd-')
 
+RESERVED_NAMES = {'World', 'all'}
+
 ################################################################################
 #Internal classes and functions start
 
 class Campaign:
     def __init__(self, id, gm):
-        self.player_names = {}
+        self.names = {}
         self.players = {}
         self.pending = []
         self.archive = []
@@ -52,7 +54,14 @@ class Player:
 
     @property
     def balance(self):
-        return '{0.cp} CP | {0.sp} SP | {0.gp} GP | {0.pp} PP'.format(self)
+        coins =  '[{0.cp} CP | {0.sp} SP | {0.gp} GP | {0.pp} PP]'.format(self)
+        egp = ' ({0} EGP)'.format(convert_to_egp({
+            'cp': self.cp,
+            'sp': self.sp,
+            'gp': self.gp,
+            'pp': self.pp,
+        }))
+        return coins + egp
 
 
 
@@ -123,6 +132,8 @@ class DatabaseManager:
         if campaign.id in self.campaigns:
             raise FileExistsError('Campaign with this ID already exists')
 
+        logging.info('Created {0}'.format(campaign.id))
+
         self.campaigns.append(campaign.id)
         self.locks[campaign.id] = asyncio.Lock()
 
@@ -134,6 +145,7 @@ class DatabaseManager:
         await self.locks[id].acquire()
 
         if id not in self.cache:
+            logging.info('Reading {0}'.format(id))
             try:
                 with open('data/{0}'.format(id), 'rb') as file:
                     campaign = pickle.load(file)
@@ -145,17 +157,21 @@ class DatabaseManager:
 
         if not blocking:
             self.locks[id].release()
+        else:
+            logging.info('Acquired lock for {0}'.format(id))
 
         return self.cache[id]
 
 
     async def save_campaign(self, campaign):
+        logging.info('Writing {0}'.format(campaign.id))
         with open('data/{0}'.format(campaign.id), 'wb') as file:
             pickle.dump(campaign, file)
         self.cache[campaign.id] = campaign
         while len(self.cache) > 10:
             self.cache.pop(self.cache.keys()[0])
         self.locks[campaign.id].release()
+        logging.info('Released lock for {0}'.format(campaign.id))
 
 
 
@@ -224,7 +240,7 @@ async def parse_indices(ctx, campaign, terms):
 
 async def log_syntax_error(ctx):
     logging.info('Invalid syntax; aborting.')
-    await ctx.send('Invalid syntax. Ask for help.')
+    await ctx.send('Invalid syntax. Use `dnd-help [command]` to view info.')
 
 
 def convert_to_egp(amounts):
@@ -250,7 +266,9 @@ brief_desc = 'Initialize a new campaign in the current channel'
 full_desc = ('Usage: dnd-initialize\n\n'
              'Initialize a new campaign in the current channel and prepare it '
              'for processing transactions. The user invoking this command '
-             'becomes the GM of this campaign and has administrative powers.')
+             'becomes the GM of this campaign and has administrative powers.'
+             '\n\nAfter using this command, you should register players or get'
+             'them to register using the dnd-register command.')
 
 @bot.command(brief = brief_desc, description = full_desc)
 async def initialize(ctx):
@@ -264,7 +282,8 @@ async def initialize(ctx):
     await dbm.add_campaign(Campaign(ctx.channel.id, ctx.author.id))
 
     logging.info('Initialization successful.')
-    await ctx.send('New campaign initialized.')
+    await ctx.send('New campaign initialized.'
+                   'Register players with `dnd-register`.')
 
 ################################################################################
 
@@ -299,25 +318,94 @@ async def register(ctx):
         await log_syntax_error(ctx)
         return
 
-    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = False)
 
-    if id in campaign.player_names:
-        name = campaign.player_names[id]
+    if id in campaign.players:
+        name = campaign.players[id].name
         logging.info('Name already exists in campaign; aborting.')
         await ctx.send('You are already registered as {0}.'.format(name))
         return
 
-    if name in campaign.players:
+    if name in campaign.names:
         logging.info('Name already exists in campaign; aborting.')
         await ctx.send('That name is already taken.')
         return
 
-    campaign.players[name] = Player(id, name)
-    campaign.player_names[id] = name
+    if name in RESERVED_NAMES:
+        logging.info('Name is a reserved keyword; aborting.')
+        await ctx.send('That name is a reserved keyword.')
+        return
+
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
+
+    campaign.players[id] = Player(id, name)
+    campaign.names[name] = id
+
     await dbm.save_campaign(campaign)
 
     logging.info('Player "{0}" successfully registered.'.format(name))
     await ctx.send('Successfully registered {0}.'.format(name))
+
+################################################################################
+
+brief_desc = 'Change the name under which a player is registered'
+full_desc = ('Usage: dnd-reregister ([user ID]) as [name]\n\n'
+             'Reregister the user in the campaign as [name] retaining their '
+             'current account balance.\n\nOnly the GM may use the optional '
+             '([user ID]) argument. When this argument is not supplied, the '
+             'user calling this command is reregistered under the given name.'
+             '[name] is case sensitive, and may not contain spaces.')
+
+@bot.command(brief = brief_desc, description = full_desc)
+async def reregister(ctx):
+    logging.info('Reregistering new player in #{0}.'.format(ctx.channel.name))
+
+    if ctx.channel.id not in dbm.campaigns:
+        logging.info('No campaign exists in this channel; aborting.')
+        await ctx.send('No campaign exists in this channel.')
+        return
+
+    try:
+        arguments = ctx.message.content.split(' ')
+        if arguments[1] == 'as':
+            id = ctx.author.id
+            name = arguments[2]
+        elif arguments[2] == 'as':
+            id = int(arguments[1])
+            name = arguments[3]
+        else:
+            raise IndexError('Invalid syntax')
+    except IndexError:
+        await log_syntax_error(ctx)
+        return
+
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = False)
+
+    if id not in campaign.players:
+        logging.info('User is not currently registered; aborting.')
+        await ctx.send('You are not registered in this campaign.')
+        return
+
+    if name in campaign.names:
+        logging.info('Name already exists in campaign; aborting.')
+        await ctx.send('That name is already taken.')
+        return
+
+    if name in RESERVED_NAMES:
+        logging.info('Name is a reserved keyword; aborting.')
+        await ctx.send('That name is a reserved keyword.')
+        return
+
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
+
+    del campaign.names[campaign.players[id].name]
+    campaign.players[id].name = name
+    campaign.names[name] = id
+    
+    await dbm.save_campaign(campaign)
+
+    logging.info('Player "{0}" successfully reregistered.'.format(name))
+    await ctx.send('Successfully reregistered as {0}.'.format(name))
 
 ################################################################################
 
@@ -387,13 +475,13 @@ async def transact(ctx):
         else:
             parsed_args[active_kw] = argument
 
-    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = False)
 
     if 'as' in parsed_args:
         if ctx.author.id in campaign.gms:
             name = parsed_args['as']
-            if name in campaign.players:
-                initiator = campaign.players[name]
+            if name in campaign.names:
+                initiator = campaign.players[campaign.names[name]]
             else:
                 logging.info('Invalid initiator name; aborting.')
                 await ctx.send('No player with name "{0}"'.format(name)
@@ -404,8 +492,8 @@ async def transact(ctx):
             await ctx.send('You are not authorized to use "as".')
             return
     else:
-        if ctx.author.id in campaign.player_names:
-            initiator = campaign.players[campaign.player_names[ctx.author.id]]
+        if ctx.author.id in campaign.players:
+            initiator = campaign.players[ctx.author.id]
         else:
             logging.info('Unregistered user; aborting.')
             await ctx.send('You are not registered in this campaign.')
@@ -472,8 +560,8 @@ async def transact(ctx):
         participant = False
 
     if participant:
-        if intake in campaign.players:
-            participant = campaign.players[intake]
+        if intake in campaign.names:
+            participant = campaign.players[campaign.names[intake]]
         else:
             logging.info('Invalid participant name; aborting.')
             await ctx.send('No player with name "{0}"'.format(initiator)
@@ -486,6 +574,8 @@ async def transact(ctx):
         reason = parsed_args['for']
     else:
         reason = None
+
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
 
     transaction = Transaction(initiator, mode, amounts, participant, reason)
     campaign.pending.append(transaction)
@@ -553,7 +643,7 @@ async def approve(ctx):
         await ctx.send('No campaign exists in this channel.')
         return
 
-    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = False)
 
     try:
         terms = ctx.message.content.split(' ', 1)[1].strip()
@@ -567,6 +657,8 @@ async def approve(ctx):
     elif not approved_indices:
         logging.info('No accessible transactions; aborting.')
         await ctx.send('No transactions available for approval.')
+
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
 
     campaign.approve(approved_indices)
 
@@ -598,13 +690,15 @@ async def deny(ctx):
         await ctx.send('No campaign exists in this channel.')
         return
 
-    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = False)
 
     terms = ctx.message.content.split(' ', 1)[1].strip()
     denied_indices = await parse_indices(ctx, campaign, terms)
 
     if not denied_indices:
         return
+
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
 
     campaign.deny(denied_indices)
 
@@ -619,7 +713,9 @@ brief_desc = 'View the account balance of a user'
 full_desc = ('Usage: dnd-balance (of [name])\n\n'
              'Show the balance in the account of a player. Only the GM may use '
              'the optional (of [name]) argument. When this argument is not '
-             'supplied, the balance of the user calling the command is shown.')
+             'supplied, the balance of the user calling the command is shown.'
+             '\n\nIf the keyword "all" is supplied instead of a player name,'
+             'the balances of all registered players is displayed.')
 
 @bot.command(brief = brief_desc, description = full_desc)
 async def balance(ctx):
@@ -647,15 +743,20 @@ async def balance(ctx):
         except IndexError:
             await log_syntax_error(ctx)
             return
-    elif ctx.author.id in campaign.player_names:
-        target = campaign.player_names[ctx.author.id]
+    elif ctx.author.id in campaign.players:
+        target = campaign.players[ctx.author.id].name
     else:
         logging.info('Unregistered user; aborting.')
         await ctx.send('You are not registered in this campaign.')
         return
 
-    if target in campaign.players:
-        msg = campaign.players[target].balance
+    if target == 'all':
+        msg = ''
+        for id in campaign.players:
+            msg += '`' + campaign.players[id].name + ': '
+            msg += campaign.players[id].balance + '`\n'
+    elif target in campaign.names:
+        msg = '`' + campaign.players[campaign.names[target]].balance + '`'
     else:
         logging.info('Invalid participant name; aborting.')
         await ctx.send('No player with name "{0}"'.format(target)

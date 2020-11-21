@@ -55,7 +55,7 @@ class Player:
     @property
     def balance(self):
         coins =  '[{0.cp} CP | {0.sp} SP | {0.gp} GP | {0.pp} PP]'.format(self)
-        egp = ' ({0} EGP)'.format(convert_to_egp({
+        egp = ' ({0:.2f} EGP)'.format(convert_to_egp({
             'cp': self.cp,
             'sp': self.sp,
             'gp': self.gp,
@@ -67,11 +67,11 @@ class Player:
 
 class Transaction:
     def __init__(self, initiator, mode, amounts, participant, reason):
-        self.initiator = initiator
-        self.mode = mode
-        self.amounts = amounts
         self.participant = participant
+        self.initiator = initiator
+        self.amounts = amounts
         self.reason = reason
+        self.mode = mode
 
         if participant is None:
             self.participant = Player(None, 'World')
@@ -240,7 +240,7 @@ async def parse_indices(ctx, campaign, terms):
 
 async def log_syntax_error(ctx):
     logging.info('Invalid syntax; aborting.')
-    await ctx.send('Invalid syntax. Use `dnd-help [command]` to view info.')
+    await ctx.send(':x: Invalid syntax. Use `dnd-help [command]` to view info.')
 
 
 def convert_to_egp(amounts):
@@ -656,7 +656,7 @@ async def approve(ctx):
         return
     elif not approved_indices:
         logging.info('No accessible transactions; aborting.')
-        await ctx.send('No transactions available for approval.')
+        await ctx.send('Invalid indicies or no pending transactions.')
 
     campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
 
@@ -695,8 +695,11 @@ async def deny(ctx):
     terms = ctx.message.content.split(' ', 1)[1].strip()
     denied_indices = await parse_indices(ctx, campaign, terms)
 
-    if not denied_indices:
+    if denied_indices is None:
         return
+    elif not denied_indices:
+        logging.info('No accessible transactions; aborting.')
+        await ctx.send('Invalid indicies or no pending transactions.')
 
     campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
 

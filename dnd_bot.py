@@ -14,6 +14,7 @@ logging.basicConfig(format = FORMAT, datefmt = DATEFMT, level = logging.INFO)
 bot = commands.Bot('dnd-')
 
 RESERVED_NAMES = {'World', 'all'}
+CURRENCIES = {'cp': 0, 'sp': 0, 'gp': 0, 'pp': 0}
 
 ################################################################################
 #Internal classes and functions start
@@ -406,6 +407,35 @@ async def reregister(ctx):
 
     logging.info('Player "{0}" successfully reregistered.'.format(name))
     await ctx.send('Successfully reregistered as {0}.'.format(name))
+
+################################################################################
+
+@bot.command(brief = brief_desc, description = full_desc)
+async def convert(ctx):
+    logging.info('Performing conversion in #{0}.'.format(ctx.channel.name))
+
+    if ctx.channel.id not in dbm.campaigns:
+        logging.info('No campaign exists in this channel; aborting.')
+        await ctx.send('No campaign exists in this channel.')
+        return
+
+    try:
+        arguments = ctx.message.content.split(' ', maxsplit = 1)[1].split(',')
+    except IndexError:
+        await log_syntax_error(ctx)
+        return
+
+    conversions = []
+    for argument in arguments:
+        components = argument.split('to')
+        if len(components) != 2:
+            await log_syntax_error(ctx)
+            return
+        conversions.append(*components[0].split(' '), components[1])
+
+
+    logging.info('Conversion successful.')
+    await ctx.send('Successfully converted currency.')
 
 ################################################################################
 

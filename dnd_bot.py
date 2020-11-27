@@ -14,7 +14,7 @@ logging.basicConfig(format = FORMAT, datefmt = DATEFMT, level = logging.INFO)
 bot = commands.Bot('dnd-')
 
 RESERVED_NAMES = {'World', 'all'}
-CURRENCIES = {'cp': 0, 'sp': 0, 'gp': 0, 'pp': 0}
+CONVERSIONS = {'cp': 1, 'sp': 10, 'gp': 100, 'pp': 1000}
 
 ################################################################################
 #Internal classes and functions start
@@ -410,6 +410,15 @@ async def reregister(ctx):
 
 ################################################################################
 
+brief_desc = 'Convert a player\'s money between different currencies'
+full_desc = ('Usage: dnd-convert [amounts]\n\nPerform the provided currency '
+             'conversions in the caller\'s account internally.\n\n[amounts] is '
+             'a collection of comma separated values, with each consisting '
+             'of an integer, followed by the unit to convert from, followed by '
+             'the keyword "to", followed by the unit to convert to. The units '
+             'may be any of CP, SP, GP, or PP. When converting up, the amount '
+             'to be converted must be an integer in the target unit.')
+
 @bot.command(brief = brief_desc, description = full_desc)
 async def convert(ctx):
     logging.info('Performing conversion in #{0}.'.format(ctx.channel.name))
@@ -425,14 +434,39 @@ async def convert(ctx):
         await log_syntax_error(ctx)
         return
 
-    conversions = []
+    amounts = {'cp': 0, 'sp': 0, 'gp': 0, 'pp': 0}
     for argument in arguments:
-        components = argument.split('to')
-        if len(components) != 2:
+        try:
+            starting, target_unit = argument.lower().split(' to ')
+            starting_amt, starting_unit = starting.strip().split(' ')
+            starting_amt = int(starting_amt)
+            conv_factor = CONVERSIONS[starting_unit]/CONVERSIONS[target_unit]
+            if not (starting_amt*conv_factor).is_integer():
+                logging.info('Invalid up-conversion; aborting.')
+                await ctx.send('Cannot convert {0} {1} to {2}.'.format(
+                    starting_amt, starting_unit.upper(), target_unit.upper()))
+                return
+            amounts[starting_unit] -= starting_amt
+            amounts[target_unit] += int(starting_amt*conv_factor)
+        except (IndexError, ValueError):
             await log_syntax_error(ctx)
             return
-        conversions.append(*components[0].split(' '), components[1])
 
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = False)
+
+    if ctx.author.id not in campaign.players:
+        logging.info('Unregistered user; aborting.')
+        await ctx.send('You are not registered in this campaign.')
+        return
+    else:
+        initiator = campaign.players[ctx.author.id]
+
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
+    
+    transaction = Transaction(initiator, 'take', amounts, None, 'conversion')
+    transaction.complete()
+
+    await dbm.save_campaign(campaign)
 
     logging.info('Conversion successful.')
     await ctx.send('Successfully converted currency.')

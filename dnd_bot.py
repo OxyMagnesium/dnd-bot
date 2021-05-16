@@ -411,13 +411,16 @@ async def reregister(ctx):
 ################################################################################
 
 brief_desc = 'Convert a player\'s money between different currencies'
-full_desc = ('Usage: dnd-convert [amounts]\n\nPerform the provided currency '
+full_desc = ('Usage: dnd-convert (as [initiator name]) [amounts]\n\nWithout '
+             'requiring authentication or GM approval, perform the specified '
              'conversions in the caller\'s account internally.\n\n[amounts] is '
              'a collection of comma separated values, with each consisting '
              'of an integer, followed by the unit to convert from, followed by '
              'the keyword "to", followed by the unit to convert to. The units '
              'may be any of CP, SP, GP, or PP. When converting up, the amount '
-             'to be converted must be an integer in the target unit.')
+             'to be converted must be an integer in the target unit. Only the '
+             'GM may use the (as [initiator name]) argument to specify the '
+             'conversion to take place in the account of [initiator name]')
 
 @bot.command(brief = brief_desc, description = full_desc)
 async def convert(ctx):
@@ -433,6 +436,30 @@ async def convert(ctx):
     except IndexError:
         await log_syntax_error(ctx)
         return
+
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = False)
+
+    if arguments[0].strip().split(' ', maxsplit = 1)[0] == 'as':
+        if ctx.author.id in campaign.gms:
+            _kw, name, arguments[0] = arguments[0].split(' ', maxsplit = 2)
+            if name in campaign.names:
+                initiator = campaign.players[campaign.names[name]]
+            else:
+                logging.info('Invalid initiator name; aborting.')
+                await ctx.send('No player with name "{0}"'.format(name)
+                               + ' exists in this campaign.')
+                return
+        else:
+            logging.info('Unauthorized use of "as"; aborting.')
+            await ctx.send('You are not authorized to use "as".')
+            return
+    else:
+        if ctx.author.id in campaign.players:
+            initiator = campaign.players[ctx.author.id]
+        else:
+            logging.info('Unregistered user; aborting.')
+            await ctx.send('You are not registered in this campaign.')
+            return
 
     amounts = {'cp': 0, 'sp': 0, 'gp': 0, 'pp': 0}
     for argument in arguments:
@@ -451,15 +478,6 @@ async def convert(ctx):
         except (IndexError, ValueError):
             await log_syntax_error(ctx)
             return
-
-    campaign = await dbm.load_campaign(ctx.channel.id, blocking = False)
-
-    if ctx.author.id not in campaign.players:
-        logging.info('Unregistered user; aborting.')
-        await ctx.send('You are not registered in this campaign.')
-        return
-    else:
-        initiator = campaign.players[ctx.author.id]
 
     campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
     
@@ -919,6 +937,12 @@ async def on_message(message):
         return
 
     await bot.process_commands(message)
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    logging.info('Error processing command "{0}"'.format(ctx.message.content))
+    await ctx.send('Invalid command or usage. Use `dnd-help` to view help.')
 
 
 @bot.event

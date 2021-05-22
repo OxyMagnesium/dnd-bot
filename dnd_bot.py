@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 import pickle
 import random
@@ -21,6 +22,7 @@ CONVERSIONS = {'cp': 1, 'sp': 10, 'gp': 100, 'pp': 1000}
 
 class Campaign:
     def __init__(self, id, gm):
+        self.VERSION = '1.0'
         self.names = {}
         self.players = {}
         self.pending = []
@@ -857,7 +859,7 @@ brief_desc = 'Roll dice of the given type and quantity'
 full_desc = ('Usage: dnd-roll ([number])d[sides](+[offset])\n\n'
              'Roll [number] [sides]-sided dice with a [offset] roll modifier. '
              'Only the [sides] argument is required, but all values must be '
-             'positive integers to be defined.')
+             'positive integers. For example, "dnd-roll 4d8+3" is valid.')
 
 @bot.command(brief = brief_desc, description = full_desc)
 async def roll(ctx):
@@ -869,23 +871,23 @@ async def roll(ctx):
         await log_syntax_error(ctx)
         return
 
-    number = intake.split('d')[0]
-    if number:
+    rolls = intake.split('d')[0]
+    if rolls:
         try:
-            number = int(number)
+            rolls = int(rolls)
         except ValueError:
             logging.info('Invalid roll number; aborting.')
-            await ctx.send('"{0}" is an invalid number.'.format(number))
+            await ctx.send('"{0}" is an invalid number of rolls.'.format(rolls))
             return
     else:
-        number = 1
+        rolls = 1
 
-    type = intake.split('d')[1].split('+')[0]
+    sides = intake.split('d')[1].split('+')[0]
     try:
-        type = int(type)
+        sides = int(sides)
     except ValueError:
-        logging.info('Invalid roll type; aborting.')
-        await ctx.send('"{0}" is an invalid die type.'.format(number))
+        logging.info('Invalid roll sides; aborting.')
+        await ctx.send('"{0}" is an invalid number of sides.'.format(rolls))
         return
 
     try:
@@ -894,18 +896,36 @@ async def roll(ctx):
         offset = 0
     except ValueError:
         logging.info('Invalid roll offset; aborting.')
-        await ctx.send('"{0}" is an invalid offset.'.format(number))
+        await ctx.send('"{0}" is an invalid offset.'.format(rolls))
         return
 
-    rolls = [1 + random.randrange(type) for _ in range(number)]
-    result = sum(rolls) + offset
+    if rolls <= 100:
+        results = [1 + random.randrange(sides) for _ in range(rolls)]
+    else:
+        try:
+            mu = rolls*(sides + 1)/2
+            sigma = math.sqrt(rolls*(sides**2 - 1)/12)
+        except OverflowError:
+            logging.info('Overflow during calculation; aborting')
+            await ctx.send('The number of rolls or sides is too large.')
+            return
+        result = round(random.gauss(mu, sigma))
+        result = min(result, rolls*sides)
+        result = max(result, rolls)
+        results = [result]
 
-    breakdown = '||('
-    for roll in rolls:
-        breakdown += str(roll) + ' + '
-    breakdown = breakdown[ :-3] + ') + {0}||'.format(offset)
+    final = sum(results) + offset
 
-    await ctx.send('Rolled {0}: **{1}**\n{2}'.format(intake, result, breakdown))
+    breakdown = ' + '.join(str(result) for result in results)
+    breakdown = '||({0}) + {1}||'.format(breakdown, offset)
+
+    msg = 'Rolled {0}: **{1}**\n{2}'.format(intake, final, breakdown)
+    if len(msg) >= 2000:
+        msg = 'Roll result: {0}'.format(final)
+        if len(msg) >= 2000:
+            msg = 'Roll result too large to display'
+
+    await ctx.send(msg)
 
 #Commands end
 ################################################################################
@@ -944,8 +964,8 @@ async def on_message(message):
 
 @bot.event
 async def on_command_error(ctx, error):
-    logging.info('Error processing command "{0}"'.format(ctx.message.content))
-    await ctx.send('Invalid command or usage. Use `dnd-help` to view help.')
+    logging.error('Error in {0}: {1}"'.format(ctx.message.content, error))
+    await ctx.send('Error processing command. Use `dnd-help` to view help.')
 
 
 @bot.event

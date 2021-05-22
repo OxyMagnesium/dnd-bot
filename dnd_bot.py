@@ -871,6 +871,10 @@ async def roll(ctx):
         await log_syntax_error(ctx)
         return
 
+    if len(intake.split('d')) != 2:
+        await log_syntax_error()
+        return
+
     rolls = intake.split('d')[0]
     if rolls:
         try:
@@ -936,29 +940,6 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    try:
-        global maintenance #Maintenance mode toggle checking.
-        if message.content.split(' ', maxsplit = 1)[0] == 'dnd-maintenance':
-            if message.content.split(' ', maxsplit = 1)[1] == 'enable':
-                logging.warning('Maintenance mode is enabled.')
-                maintenance = True
-                msg = 'Maintenance mode'
-                await bot.change_presence(activity = discord.Game(name = msg))
-                await message.channel.send('Maintenance mode is enabled.')
-                return
-            if message.content.split(' ', maxsplit = 1)[1] == 'disable':
-                logging.warning('Maintenance mode is disabled.')
-                maintenance = False
-                msg = status_message
-                await bot.change_presence(activity = discord.Game(name = msg))
-                await message.channel.send('Maintenance mode is disabled.')
-                return
-    except IndexError:
-        pass
-
-    if maintenance == True:
-        return
-
     await bot.process_commands(message)
 
 
@@ -979,8 +960,7 @@ async def on_ready():
 
 if __name__ == '__main__':
     token = '' #Manually add token here.
-    status_message = 'DnD (dnd-help)'
-    maintenance = False
+    status_message = 'D&D (dnd-help)'
 
     if token == '': #Get token if it's not already in the code.
         try:

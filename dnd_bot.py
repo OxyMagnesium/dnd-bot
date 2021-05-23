@@ -144,6 +144,16 @@ class DatabaseManager:
         await self.save_campaign(campaign)
 
 
+    async def del_campaign(self, id):
+        os.remove('data/{0}'.format(id))
+        self.campaigns.remove(id)
+        self.locks.pop(id)
+        if id in self.cache:
+            self.cache.pop(id)
+
+        logging.info('Successfully deleted {0}'.format(id))
+
+
     async def load_campaign(self, id, blocking = False):
         await self.locks[id].acquire()
 
@@ -275,7 +285,7 @@ full_desc = ('Usage: dnd-initialize\n\n'
 
 @bot.command(brief = brief_desc, description = full_desc)
 async def initialize(ctx):
-    logging.info('Initializing new campaign in #{0}.'.format(ctx.channel.name))
+    logging.info('Initializing new campaign in {0}.'.format(ctx.channel.id))
 
     if os.path.isfile('data/{0}'.format(ctx.channel.id)):
         logging.info('Campaign already exists; aborting.')
@@ -287,6 +297,60 @@ async def initialize(ctx):
     logging.info('Initialization successful.')
     await ctx.send('New campaign initialized.'
                    'Register players with `dnd-register`.')
+
+################################################################################
+
+brief_desc = 'Delete the campaign in the current channel'
+full_desc = ('Usage: dnd-delete\n\n'
+             'Permanently delete the campaign the current channel, including '
+             'all registered players and previous transactions. This action is'
+             'irreversible. Only the GM can use this command. Use this comamnd'
+             'without any arguments to view instructions to do the deletion.')
+
+@bot.command(brief = brief_desc, description = full_desc)
+async def delete(ctx):
+    logging.info('Deleting campaign in {0}.'.format(ctx.channel.id))
+
+    if ctx.channel.id not in dbm.campaigns:
+        logging.info('No campaign exists in this channel; aborting.')
+        await ctx.send('No campaign exists in this channel.')
+        return
+
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = False)
+
+    if ctx.author.id not in campaign.gms:
+        logging.info('Unauthorized use of command; aborting.')
+        await ctx.send('Only the GM can delete campaigns.')
+        return
+
+    try:
+        intake = ctx.message.content.split(' ')[1]
+    except IndexError:
+        logging.info('No channel ID given; aborting')
+        await ctx.send(
+            'Warning: campaign deletion is permanent and irreversible. '
+            'All players, balances and transactions will be wiped.\n\n'
+            'If you are sure you want to do this, retype this command '
+            'as `dnd-delete {0}` to delete it.'.format(campaign.id)
+        )
+        return
+
+    try:
+        id = int(intake)
+    except ValueError:
+        logging.info('Channel ID is not an integer; aborting')
+        await ctx.send('Use your channel id `{0}`'.format(campaign.id))
+        return
+
+    if id != campaign.id:
+        logging.info('Channel ID does not match campaign; aborting')
+        await ctx.send('Use your channel id `{0}`'.format(campaign.id))
+        return
+
+    await dbm.del_campaign(campaign.id)
+
+    logging.info('Deletion successful.')
+    await ctx.send('Campaign has been deleted.')
 
 ################################################################################
 

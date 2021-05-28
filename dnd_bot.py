@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import math
 import os
@@ -22,13 +23,17 @@ CONVERSIONS = {'cp': 1, 'sp': 10, 'gp': 100, 'pp': 1000}
 
 class Campaign:
     def __init__(self, id, gm):
-        self.VERSION = '1.0'
+        self.VERSION = '1.1'
         self.names = {}
         self.players = {}
         self.pending = []
         self.archive = []
         self.id = id
         self.gms = [gm]
+
+    
+    def add_transaction(self, transaction):
+        self.pending.append(transaction)
 
 
     def approve(self, indices):
@@ -43,6 +48,29 @@ class Campaign:
         self.pending = [item for index, item in enumerate(self.pending)
                         if index not in indices]
 
+    
+    def to_csv(self):
+        vals = ['Initiator,Giver,Taker,CP,SP,GP,PP,Reason']
+        for transaction in self.archive:
+            initiator = transaction.initiator.name
+            if transaction.mode == 'give':
+                giver = transaction.initiator.name
+                taker = transaction.participant.name
+            elif transaction.mode == 'take':
+                giver = transaction.participant.name
+                taker = transaction.initiator.name
+            else:
+                raise ValueError('Invalid transaction mode')
+            cp = transaction.amounts['cp']
+            sp = transaction.amounts['sp']
+            gp = transaction.amounts['gp']
+            pp = transaction.amounts['pp']
+            reason = transaction.reason
+            vals.append(','.join(str(val) for val in (
+                initiator, giver, taker,
+                cp, sp, gp, pp, reason,
+            )))
+        return '\n'.join(vals)
 
 
 class Player:
@@ -164,8 +192,8 @@ class DatabaseManager:
                     campaign = pickle.load(file)
             except FileNotFoundError:
                 return None
-            self.cache[campaign.id] = campaign
-            while len(self.cache) > 10:
+            self.cache[id] = campaign
+            while len(self.cache) > 100:
                 self.cache.pop(self.cache.keys()[0])
 
         if not blocking:
@@ -303,9 +331,9 @@ async def initialize(ctx):
 brief_desc = 'Delete the campaign in the current channel'
 full_desc = ('Usage: dnd-delete\n\n'
              'Permanently delete the campaign the current channel, including '
-             'all registered players and previous transactions. This action is'
-             'irreversible. Only the GM can use this command. Use this comamnd'
-             'without any arguments to view instructions to do the deletion.')
+             'all registered players and previous transactions. This action is '
+             'irreversible. Only the GM can use this command. Use this command '
+             'without any arguments to view instructions to proceed.')
 
 @bot.command(brief = brief_desc, description = full_desc)
 async def delete(ctx):
@@ -726,7 +754,7 @@ async def transact(ctx):
     campaign = await dbm.load_campaign(ctx.channel.id, blocking = True)
 
     transaction = Transaction(initiator, mode, amounts, participant, reason)
-    campaign.pending.append(transaction)
+    campaign.add_transaction(transaction)
 
     await dbm.save_campaign(campaign)
 
@@ -994,6 +1022,29 @@ async def roll(ctx):
             msg = 'Roll result too large to display'
 
     await ctx.send(msg)
+
+################################################################################
+
+brief_desc = 'Export the transaction history of this campaign'
+full_desc = ('Usage: dnd-history\n\n'
+             'Export the campaign transaction history as a .csv file. ')
+
+@bot.command(brief = brief_desc, description = full_desc)
+async def history(ctx):
+    logging.info('Exporting history in #{0}.'.format(ctx.channel.name))
+
+    if ctx.channel.id not in dbm.campaigns:
+        logging.info('No campaign exists in this channel; aborting.')
+        await ctx.send('No campaign exists in this channel.')
+        return
+
+    campaign = await dbm.load_campaign(ctx.channel.id, blocking = False)
+
+    csv = Campaign.to_csv(campaign)
+    name = '{0}.csv'.format(ctx.channel.name)
+
+    logging.info('Generated history for #{0}.'.format(ctx.channel.name))
+    await ctx.send(file=discord.File(io.StringIO(csv), name))
 
 #Commands end
 ################################################################################
